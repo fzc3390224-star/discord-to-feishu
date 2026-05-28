@@ -12,11 +12,6 @@ CHANNEL_IDS = [cid.strip() for cid in CHANNEL_IDS_STR.split(',') if cid.strip()]
 processed_messages = set()
 
 class DiscordToFeishu(discord.Client):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        super().__init__(intents=intents)
-    
     async def on_ready(self):
         print(f'Logged in as {self.user}')
         print(f'Monitoring: {CHANNEL_IDS if CHANNEL_IDS else "All channels"}')
@@ -61,8 +56,6 @@ def main():
     client = DiscordToFeishu()
     try:
         client.run(DISCORD_TOKEN)
-    except discord.errors.LoginFailure:
-        print('Error: Invalid Discord Token')
     except Exception as e:
         print(f'Error: {e}')
 
