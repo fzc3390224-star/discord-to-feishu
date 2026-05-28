@@ -2,16 +2,32 @@ import requests
 import json
 import os
 import time
+import threading
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 FEISHU_WEBHOOK = os.environ.get('FEISHU_WEBHOOK', '')
 CHANNEL_IDS_STR = os.environ.get('CHANNEL_IDS', '')
 CHANNEL_IDS = [cid.strip() for cid in CHANNEL_IDS_STR.split(',') if cid.strip()] if CHANNEL_IDS_STR else []
 POLL_INTERVAL = int(os.environ.get('POLL_INTERVAL', '10'))
+PORT = int(os.environ.get('PORT', '10000'))
 
 HEADERS = {'Authorization': DISCORD_TOKEN}
 last_message_ids = {}
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'OK')
+    def log_message(self, format, *args):
+        pass
+
+def start_server():
+    server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
+    server.serve_forever()
 
 def get_guilds():
     try:
@@ -58,28 +74,7 @@ def send_to_feishu(channel_name, author_name, content):
     except Exception as e:
         print(f'  -> Error: {e}')
 
-def main():
-    if not DISCORD_TOKEN:
-        print('Error: DISCORD_TOKEN not set')
-        return
-    if not FEISHU_WEBHOOK:
-        print('Error: FEISHU_WEBHOOK not set')
-        return
-    
-    print(f'Starting Discord to Feishu sync...')
-    print(f'Polling every {POLL_INTERVAL} seconds')
-    print(f'Channel filter: {CHANNEL_IDS if CHANNEL_IDS else "All channels"}')
-    print('=' * 50)
-    
-    # Test token
-    r = requests.get('https://discord.com/api/v10/users/@me', headers=HEADERS, timeout=10)
-    if r.status_code != 200:
-        print(f'Error: Invalid Discord Token (status {r.status_code})')
-        return
-    user = r.json()
-    print(f'Logged in as: {user["username"]}')
-    print('=' * 50)
-    
+def poll_discord(user):
     while True:
         try:
             guilds = get_guilds()
@@ -94,7 +89,6 @@ def main():
                         if msg_id in last_message_ids.get(ch['id'], set()):
                             continue
                         last_message_ids.setdefault(ch['id'], set()).add(msg_id)
-                        # Keep only last 100 IDs per channel
                         if len(last_message_ids[ch['id']]) > 100:
                             last_message_ids[ch['id']] = set(list(last_message_ids[ch['id']])[-100:])
                         author = msg.get('author', {})
@@ -106,12 +100,34 @@ def main():
                         print(f'[{datetime.now()}] New: [{ch["name"]}] {author["username"]}: {content[:50]}')
                         send_to_feishu(ch['name'], author['username'], content)
             time.sleep(POLL_INTERVAL)
-        except KeyboardInterrupt:
-            print('Stopped.')
-            break
         except Exception as e:
-            print(f'Error: {e}')
+            print(f'Poll error: {e}')
             time.sleep(POLL_INTERVAL)
+
+def main():
+    if not DISCORD_TOKEN:
+        print('Error: DISCORD_TOKEN not set')
+        return
+    if not FEISHU_WEBHOOK:
+        print('Error: FEISHU_WEBHOOK not set')
+        return
+    
+    # Start health check server
+    threading.Thread(target=start_server, daemon=True).start()
+    print(f'Health check server started on port {PORT}')
+    
+    # Test token
+    r = requests.get('https://discord.com/api/v10/users/@me', headers=HEADERS, timeout=10)
+    if r.status_code != 200:
+        print(f'Error: Invalid Discord Token (status {r.status_code})')
+        return
+    user = r.json()
+    print(f'Logged in as: {user["username"]}')
+    print(f'Polling every {POLL_INTERVAL}s')
+    print(f'Channel filter: {CHANNEL_IDS if CHANNEL_IDS else "All channels"}')
+    print('=' * 50)
+    
+    poll_discord(user)
 
 if __name__ == '__main__':
     main()
