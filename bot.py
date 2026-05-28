@@ -25,10 +25,6 @@ class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-def start_server():
-    server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
-    server.serve_forever()
-
 def get_guilds():
     try:
         r = requests.get('https://discord.com/api/v10/users/@me/guilds', headers=HEADERS, timeout=10)
@@ -112,9 +108,10 @@ def main():
         print('Error: FEISHU_WEBHOOK not set')
         return
     
-    # Start health check server
-    threading.Thread(target=start_server, daemon=True).start()
+    # Start health check server FIRST
+    server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
     print(f'Health check server started on port {PORT}')
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     
     # Test token
     r = requests.get('https://discord.com/api/v10/users/@me', headers=HEADERS, timeout=10)
