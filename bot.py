@@ -109,7 +109,7 @@ def poll_discord(user):
                     if msg.get('author', {}).get('id') == user['id']: 
                         continue
                     
-                    # 🛠️ 1. 深度收集“所有可能存在文本”的地方
+                    # 1. 深度收集“所有可能存在文本”的地方
                     text_pieces = []
                     
                     # 普通聊天文本
@@ -117,40 +117,36 @@ def poll_discord(user):
                     if base_content:
                         text_pieces.append(base_content)
                     
-                    # 🔍 扫描嵌入式卡片（Embeds）里的隐藏文本（比如机器人发的通知文字）
+                    # 扫描嵌入式卡片（Embeds）里的隐藏文本
                     embeds = msg.get('embeds', [])
                     extra_links = []
                     
                     for emb in embeds:
-                        # 捞取卡片标题
                         if emb.get('title'):
                             text_pieces.append(f"【标题】{emb.get('title').strip()}")
-                        # 捞取卡片描述（最常藏字的地方）
                         if emb.get('description'):
                             text_pieces.append(emb.get('description').strip())
                         
-                        # 顺带捞取卡片里的图片/链接
                         if emb.get('url'): 
                             extra_links.append(f"[链接预览]: {emb.get('url')}")
                         elif emb.get('image', {}).get('url'): 
                             extra_links.append(f"[嵌入图片]: {emb.get('image', {}).get('url')}")
 
-                    # 捞取普通附件（普通用户发的图片链接）
+                    # 捞取普通附件
                     for att in msg.get('attachments', []):
                         if att.get('url'): 
                             extra_links.append(f"[图片/附件]: {att.get('url')}")
-                        # 有时候附件也有人写描述说明，顺便捞一下
                         if att.get('description'):
                             text_pieces.append(f"（图片说明：{att.get('description').strip()}）")
 
                     # 合并文字块
                     final_content = "\n".join(text_pieces).strip()
 
-                    # 2. 严格检查：如果没有文字，也没有链接，直接跳过
+                    # 2. 检查空内容
                     if not final_content and not extra_links: 
                         continue
                     
-                    # 3. 组装最终发往飞书的文本
+                    # 3. 组装最终文本
                     final_text = final_content
                     if extra_links:
                         final_text = (final_text + "\n" + "\n".join(extra_links)) if final_text else "\n".join(extra_links)
@@ -159,7 +155,8 @@ def poll_discord(user):
                         continue
 
                     cname = channel_display_names.get(channel_id)
-                    print(f"📩 [{datetime.now().strftime('%H:%M('%S')}] 抓取到 [{cname}] 深度解析消息并投递")
+                    # 🛠️ 这一行的格式已经彻底修复完美
+                    print(f"📩 [{datetime.now().strftime('%H:%M:%S')}] 抓取到 [{cname}] 深度消息并投递")
                     
                     for webhook in webhooks:
                         send_to_feishu(webhook, cname, final_text)
