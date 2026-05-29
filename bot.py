@@ -150,7 +150,7 @@ def poll_discord(user):
                 print("--- 🏁 初始化同步完成，开始实时监控 ---")
 
             # 🎯 核心需求：9-15秒随机访问一次
-            sleep_time = random.uniform(9.0, 15.0)
+            sleep_time = random.uniform(8.8, 13.8)
             time.sleep(sleep_time)
             
         except Exception as e:
