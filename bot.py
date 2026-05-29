@@ -12,7 +12,6 @@ DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 CHANNEL_MAPPINGS_STR = os.environ.get('CHANNEL_MAPPINGS', '')
 PORT = int(os.environ.get('PORT', '10000'))
 
-# 模拟真实浏览器 Header
 BASE_HEADERS = {
     'Authorization': DISCORD_TOKEN,
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -22,16 +21,16 @@ BASE_HEADERS = {
     'X-Discord-Locale': 'zh-CN',
 }
 
-# 全局变量
 last_message_ids = {}
 initialized = False
 CHANNEL_MAPPINGS = {}
 CHANNEL_CUSTOM_NAMES = {}
 
-# ================= 核心逻辑 =================
-
 def parse_config():
-    if not CHANNEL_MAPPINGS_STR: return
+    if not CHANNEL_MAPPINGS_STR: 
+        print("⚠️ 警告: CHANNEL_MAPPINGS 环境变量是空的！")
+        return
+    print(f"原配置文本: {CHANNEL_MAPPINGS_STR}")
     for config in CHANNEL_MAPPINGS_STR.split(';'):
         if not config.strip(): continue
         parts = config.strip().split(':')
@@ -43,6 +42,8 @@ def parse_config():
         elif len(parts) == 2:
             cid, webhook = parts[0].strip(), parts[1].strip()
             CHANNEL_MAPPINGS[cid] = [w.strip() for w in webhook.split(',') if w.strip()]
+    print(f"成功解析的映射表: {CHANNEL_MAPPINGS}")
+    print(f"成功解析的别名表: {CHANNEL_CUSTOM_NAMES}")
 
 def get_channel_real_name(channel_id):
     try:
@@ -50,162 +51,132 @@ def get_channel_real_name(channel_id):
         r = requests.get(url, headers=BASE_HEADERS, timeout=10)
         if r.status_code == 200:
             return r.json().get('name', f'ID-{channel_id[:8]}')
-    except: pass
+        else:
+            print(f"⚠️ 无法获取频道 {channel_id} 的真实名字，状态码: {r.status_code}")
+    except Exception as e: 
+        print(f"⚠️ 获取频道名称异常: {e}")
     return f'ID-{channel_id[:8]}'
 
 def get_messages(channel_id):
     try:
         url = f'https://discord.com/api/v10/channels/{channel_id}/messages?limit=5'
         r = requests.get(url, headers=BASE_HEADERS, timeout=15)
+        print(f"🔄 正在尝试读取频道 [{channel_id}]，Discord 返回状态码: {r.status_code}")
         if r.status_code == 429:
             retry_after = r.json().get('retry_after', 10)
-            print(f"⚠️ [风控触发] Discord 要求冷却 {retry_after}s...")
+            print(f"⚠️ [风控触发] 触发限流，请求冷却 {retry_after}s...")
             time.sleep(retry_after + 1)
             return []
-        if r.status_code == 200: return r.json()
+        if r.status_code == 200: 
+            msgs = r.json()
+            print(f"📥 成功获取到 {len(msgs)} 条历史消息")
+            return msgs
     except Exception as e:
-        print(f"❌ 网络异常: {e}")
+        print(f"❌ 读取消息网络异常: {e}")
     return []
 
-def upload_image_to_feishu(webhook_url, image_url):
-    """下载 Discord 图片并上传到飞书，获取 image_key"""
+def send_to_feishu(webhook_url, channel_name, content):
     try:
-        # 1. 下载 Discord 图片 (使用伪装 Header)
-        img_res = requests.get(image_url, headers=BASE_HEADERS, timeout=15)
-        if img_res.status_code != 200: return None
-        img_data = img_res.content
-
-        # 2. 从 Webhook 提取飞书域名，换取上传接口 URL
-        # 飞书 Webhook 形式如：https://open.feishu.cn/open-apis/bot/v2/hook/xxx
-        # 其对应的图片上传接口为：https://open.feishu.cn/open-apis/bot/v2/hook/upload_image/xxx
-        if "upload_image" not in webhook_url:
-            upload_url = webhook_url.replace("/v2/hook/", "/v2/hook/upload_image/")
-        else:
-            upload_url = webhook_url
-
-        # 3. 上传到飞书
-        files = {
-            'image': ('image.png', img_data, 'image/png')
-        }
-        # 飞书限制自定义机器人上传图片格式为 form-data，且必须带 image_type
-        data = {'image_type': 'message'} 
-        
-        up_res = requests.post(upload_url, files=files, data=data, timeout=20)
-        if up_res.status_code == 200:
-            res_json = up_res.json()
-            if res_json.get('code') == 0:
-                return res_json.get('data', {}).get('image_key')
-            else:
-                print(f"❌ 飞书图片上传返回错误: {res_json.get('msg')}")
-    except Exception as e:
-        print(f"❌ 上传图片到飞书失败: {e}")
-    return None
-
-def send_to_feishu_rich_text(webhook_url, channel_name, content, image_keys):
-    """使用飞书富文本(post)消息格式发送文字和图片"""
-    try:
-        # 构造富文本内容
-        content_element = []
-        
-        # 添加文字部分
-        if content:
-            content_element.append({"tag": "text", "text": f"{content}\n"})
-        
-        # 添加图片部分
-        for img_key in image_keys:
-            if img_key:
-                content_element.append({"tag": "img", "image_key": img_key})
-
         payload = {
-            "msg_type": "post",
-            "content": {
-                "post": {
-                    "zh_cn": {
-                        "title": f"[{channel_name}]",
-                        "content": [content_element]
-                    }
-                }
-            }
+            'msg_type': 'text',
+            'content': {'text': f'[{channel_name}]\n{content}'}
         }
-        requests.post(webhook_url, json=payload, timeout=10)
+        print(f"📤 正在向飞书投递消息...")
+        r = requests.post(webhook_url, json=payload, timeout=10)
+        print(f"📬 飞书接口返回: {r.text}")
     except Exception as e:
-        print(f"❌ 飞书富文本发送失败: {e}")
+        print(f"❌ 飞书投递异常: {e}")
 
 def poll_discord(user):
     global initialized
     channel_display_names = {}
     
-    print("🔍 正在配置频道名称...")
+    print("\n--- 🔍 步骤 2: 初始化频道展示名称 ---")
     for cid in CHANNEL_MAPPINGS.keys():
         channel_display_names[cid] = CHANNEL_CUSTOM_NAMES.get(cid) or get_channel_real_name(cid)
     
-    print(f"✅ 监控启动！当前用户: {user['username']}")
-    print(f"⚙️ 模式: 9-13.8秒随机人类行为模拟 + 支持图片同步")
+    print(f"\n✅ 监控正式启动！登录账号: {user['username']} (ID: {user['id']})")
+    print(f"⚙️ 运行模式: 9-13.8秒随机纯文本排错版\n")
 
     while True:
         try:
             for channel_id, webhooks in CHANNEL_MAPPINGS.items():
+                cname = channel_display_names.get(channel_id)
+                print(f"\n⏱️ [{datetime.now().strftime('%H:%M:%S')}] ---> 开始轮询频道: [{cname}] ({channel_id})")
+                
                 messages = get_messages(channel_id)
                 time.sleep(random.uniform(0.5, 1.5))
 
                 if not initialized:
                     if messages:
                         last_message_ids[channel_id] = {m['id'] for m in messages}
+                        print(f"📌 [初始化阶段] 已记录当前最新的 {len(messages)} 条消息 ID，跳过发送。")
+                    else:
+                        print(f"📌 [初始化阶段] 当前频道没有任何历史消息。")
                     continue
                 
+                if not messages:
+                    print(f"ℹ️ 本轮未抓取到任何消息（可能网络波动或接口为空）")
+                    continue
+
                 for msg in reversed(messages):
                     mid = msg['id']
-                    if mid in last_message_ids.get(channel_id, set()): continue
+                    author_name = msg.get('author', {}).get('username', '未知用户')
+                    msg_content = msg.get('content', '')
+                    
+                    print(f"🔍 检查消息 ID: {mid} | 发送者: {author_name} | 内容开头: {msg_content[:15]}")
+
+                    # 检查是否重复
+                    if mid in last_message_ids.get(channel_id, set()): 
+                        print("   -> 略过：属于旧消息")
+                        continue
                     
                     last_message_ids.setdefault(channel_id, set()).add(mid)
                     if len(last_message_ids[channel_id]) > 50:
                         last_message_ids[channel_id] = set(list(last_message_ids[channel_id])[-50:])
                     
-                    if msg.get('author', {}).get('id') == user['id']: continue
+                    # 检查是不是自己
+                    if msg.get('author', {}).get('id') == user['id']: 
+                        print("   -> 略过：这是你自己在 Discord 发的消息")
+                        continue
                     
-                    content = msg.get('content', '')
+                    # 提取文字
+                    content = msg_content.strip()
                     
-                    # 🔍 提取 Discord 消息中的图片
-                    image_keys_map = {} # 格式 {webhook: [image_key1, ...]}
-                    attachments = msg.get('attachments', [])
-                    embeds = msg.get('embeds', [])
-                    
-                    # 收集所有的图片 URL
-                    img_urls = []
-                    for att in attachments:
-                        if att.get('content_type', '').startswith('image/') or att.get('url', '').split('?')[0].endswith(('png', 'jpg', 'jpeg', 'gif', 'webp')):
-                            img_urls.append(att.get('url'))
-                    for emb in embeds:
-                        if emb.get('image', {}).get('url'):
-                            img_urls.append(emb.get('image', {}).get('url'))
+                    # 提取图片/网页链接
+                    extra_links = []
+                    for att in msg.get('attachments', []):
+                        if att.get('url'): extra_links.append(f"[附件/图片链接]: {att.get('url')}")
+                    for emb in msg.get('embeds', []):
+                        if emb.get('url'): extra_links.append(f"[预览链接]: {emb.get('url')}")
+                        elif emb.get('image', {}).get('url'): extra_links.append(f"[嵌入图链接]: {emb.get('image', {}).get('url')}")
 
-                    # 如果没有任何文字，也没有任何图片，则跳过
-                    if not content and not img_urls: continue
+                    if not content and not extra_links:
+                        print("   -> 略过：该消息不含任何可转发文本或有效链接")
+                        continue
                     
-                    cname = channel_display_names.get(channel_id)
-                    print(f"📩 [{datetime.now().strftime('%H:%M:%S')}] 来自 [{cname}] 的新消息(文字长度:{len(content)}, 图片数:{len(img_urls)})")
+                    final_text = content
+                    if extra_links:
+                        final_text = (final_text + "\n" + "\n".join(extra_links)) if final_text else "\n".join(extra_links)
                     
-                    # 分别处理每个 webhook（因为每个 webhook 上传图片生成的 image_key 是独立的）
+                    if not final_text.strip(): 
+                        print("   -> 略过：最终文本内容为空")
+                        continue
+                    
+                    print(f"🔥 发现全新有效消息！准备发送至飞书...")
                     for webhook in webhooks:
-                        feishu_img_keys = []
-                        if img_urls:
-                            for url in img_urls:
-                                img_key = upload_image_to_feishu(webhook, url)
-                                if img_key: feishu_img_keys.append(img_key)
-                        
-                        # 统一使用富文本格式发送，体验更好
-                        send_to_feishu_rich_text(webhook, cname, content, feishu_img_keys)
+                        send_to_feishu(webhook, cname, final_text)
             
             if not initialized:
                 initialized = True
-                print("--- 🏁 初始化同步完成，开始实时监控 ---")
+                print("\n" + "="*20 + " 🏁 初始化同步完成，开始实时监控新消息 " + "="*20 + "\n")
 
-            # 🎯 你的专属随机时间设定
-            sleep_time = random.uniform(8.8, 13.8)
+            sleep_time = random.uniform(9.0, 13.8)
+            print(f"💤 这一轮所有群轮询完毕，随机休眠 {sleep_time:.2f} 秒...")
             time.sleep(sleep_time)
             
         except Exception as e:
-            print(f"🚨 循环异常: {e}")
+            print(f"🚨 循环发生致命异常: {e}")
             time.sleep(13.8)
 
 # ================= 服务入口 =================
@@ -217,17 +188,19 @@ class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
 
 def main():
+    print("--- 🔍 步骤 1: 开始解析环境变量 ---")
     parse_config()
-    if not DISCORD_TOKEN or not CHANNEL_MAPPINGS:
-        print("❌ 错误: 环境变量未配置完全")
+    if not DISCORD_TOKEN or not CHANNEL_MAPPINGS: 
+        print("❌ 错误: 基础环境变量配置不完整，请检查 DISCORD_TOKEN 和 CHANNEL_MAPPINGS")
         return
     
     server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     
+    print("\n--- 🔍 步骤 2: 正在向 Discord 验证 Token 身份 ---")
     r = requests.get('https://discord.com/api/v10/users/@me', headers=BASE_HEADERS)
-    if r.status_code != 200:
-        print(f"❌ Token 验证失败 ({r.status_code})")
+    if r.status_code != 200: 
+        print(f"❌ 身份验证失败！Discord 返回状态码: {r.status_code}。请确认 Token 是否过期或填错。")
         return
     
     poll_discord(r.json())
