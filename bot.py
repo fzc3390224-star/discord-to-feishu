@@ -13,6 +13,7 @@ PORT = int(os.environ.get('PORT', '10000'))
 
 HEADERS = {'Authorization': DISCORD_TOKEN}
 last_message_ids = {}
+initialized = False
 
 # 解析频道映射配置
 CHANNEL_MAPPINGS = {}
@@ -45,12 +46,12 @@ def get_messages(channel_id):
         pass
     return []
 
-def send_to_feishu(webhook_url, channel_id, author_name, content):
+def send_to_feishu(webhook_url, channel_name, content):
     try:
         payload = {
             'msg_type': 'text',
             'content': {
-                'text': f'Discord Message\n\nChannel: {channel_id}\nAuthor: {author_name}\nContent: {content}'
+                'text': f'[{channel_name}]\n{content}'
             }
         }
         r = requests.post(webhook_url, headers={'Content-Type': 'application/json'},
@@ -58,29 +59,26 @@ def send_to_feishu(webhook_url, channel_id, author_name, content):
     except Exception as e:
         pass
 
-def init_last_message_ids(user):
-    """初始化：获取每个频道最新一条消息的ID，但不发送"""
-    print('Initializing message tracking...')
-    for channel_id in CHANNEL_MAPPINGS.keys():
-        messages = get_messages(channel_id)
-        if messages:
-            latest_msg = messages[0]  # 最新的消息在第一个
-            msg_id = latest_msg['id']
-            last_message_ids[channel_id] = {msg_id}
-            author = latest_msg.get('author', {}).get('username', 'Unknown')
-            content = latest_msg.get('content', '')[:30]
-            if latest_msg.get('author', {}).get('id') == user['id']:
-                print(f'  [{channel_id}] Latest by self: {author} - {content}... (skipped)')
-            else:
-                print(f'  [{channel_id}] Latest: {author} - {content}... (skipped)')
-    print('Initialization complete.')
-    print('=' * 50)
-
 def poll_discord(user):
+    global initialized
+    
+    # 缓存频道名称
+    channel_names = {}
+    
     while True:
         try:
             for channel_id, webhooks in CHANNEL_MAPPINGS.items():
                 messages = get_messages(channel_id)
+                
+                # 第一次运行时，只记录所有消息ID，不发送
+                if not initialized:
+                    if messages:
+                        msg_ids = {msg['id'] for msg in messages}
+                        last_message_ids[channel_id] = msg_ids
+                        print(f'  [{channel_id}] Tracked {len(msg_ids)} existing messages')
+                    continue
+                
+                # 正常轮询，只发送新消息
                 for msg in reversed(messages):
                     msg_id = msg['id']
                     if msg_id in last_message_ids.get(channel_id, set()):
@@ -88,40 +86,60 @@ def poll_discord(user):
                     last_message_ids.setdefault(channel_id, set()).add(msg_id)
                     if len(last_message_ids[channel_id]) > 100:
                         last_message_ids[channel_id] = set(list(last_message_ids[channel_id])[-100:])
+                    
                     author = msg.get('author', {})
                     if author.get('id') == user['id']:
                         continue
+                    
                     content = msg.get('content', '')
                     if not content:
                         continue
-                    print(f'[{datetime.now()}] [{channel_id}] {author["username"]}: {content[:50]}')
+                    
+                    # 获取频道名称（从消息中获取）
+                    channel_name = channel_names.get(channel_id)
+                    if not channel_name:
+                        # 尝试从消息中获取频道信息
+                        channel_name = msg.get('channel_id', 'Unknown')
+                        # 简化为只显示ID前8位
+                        channel_name = f'Channel-{channel_id[:8]}'
+                        channel_names[channel_id] = channel_name
+                    
+                    print(f'[{datetime.now()}] [{channel_name}] {content[:50]}')
                     for webhook in webhooks:
-                        send_to_feishu(webhook, channel_id, author['username'], content)
+                        send_to_feishu(webhook, channel_name, content)
+            
+            # 第一轮完成后，标记为已初始化
+            if not initialized:
+                initialized = True
+                print('Initialization complete. Now tracking new messages only.')
+                print('=' * 50)
+            
             time.sleep(POLL_INTERVAL)
         except Exception as e:
             time.sleep(POLL_INTERVAL)
 
 def main():
     if not DISCORD_TOKEN:
+        print('Error: DISCORD_TOKEN not set')
         return
     if not CHANNEL_MAPPINGS:
+        print('Error: CHANNEL_MAPPINGS not set')
         return
     
     server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f'Health check server started on port {PORT}')
     
     r = requests.get('https://discord.com/api/v10/users/@me', headers=HEADERS, timeout=10)
     if r.status_code != 200:
+        print(f'Error: Invalid Discord Token (status {r.status_code})')
         return
     user = r.json()
     print(f'Logged in as: {user["username"]}')
     print(f'Polling every {POLL_INTERVAL}s')
     for ch, hooks in CHANNEL_MAPPINGS.items():
         print(f'Channel {ch} -> {len(hooks)} webhook(s)')
-    print('=' * 50)
-    
-    # 初始化：记录最新消息ID，但不发送
-    init_last_message_ids(user)
+    print('Initializing message tracking (first round will not send)...')
     
     poll_discord(user)
 
