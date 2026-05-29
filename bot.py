@@ -27,19 +27,18 @@ CHANNEL_MAPPINGS = {}
 
 def parse_config():
     if not CHANNEL_MAPPINGS_STR: return
-    # 针对分号分割的多个频道进行处理
     for config in CHANNEL_MAPPINGS_STR.split(';'):
         if not config.strip(): continue
         
-        # 🛠️ 核心修复：使用 split(':', 1) 限制只切第一刀！
-        # 这样 '6540385343:https://open.feishu.cn/...' 会被精准切成：
-        # ['6540385343', 'https://open.feishu.cn/...'] 后面 https 的冒号再也不会被切断！
-        parts = config.strip().split(':', 1)
-        
+        target_str = config.strip()
+        # 🛠️ 核心修复：自动剥离前面的中括号备注
+        if ']' in target_str:
+            target_str = target_str.split(']')[-1].strip()
+            
+        parts = target_str.split(':', 1)
         if len(parts) == 2:
             cid = parts[0].strip()
             webhooks_part = parts[1].strip()
-            # 支持用逗号配置多个飞书群
             CHANNEL_MAPPINGS[cid] = [w.strip() for w in webhooks_part.split(',') if w.strip()]
 
 def get_messages(channel_id):
@@ -64,14 +63,14 @@ def send_to_feishu(webhook_url, content):
         }
         r = requests.post(webhook_url, json=payload, timeout=10)
         if r.status_code != 200 or r.json().get('code') != 0:
-            print(f"❌ 飞书内部拒绝发送: {r.text} | Webhook: {webhook_url}")
+            print(f"❌ 飞书内部拒绝发送: {r.text}")
     except Exception as e:
-        print(f"❌ 飞书网络发送失败: {e} | Webhook: {webhook_url}")
+        print(f"❌ 飞书网络发送失败: {e}")
 
 def poll_discord(user):
     global initialized
     
-    print(f"\n🚀 智能冒号解析版监控启动！当前用户: {user['username']}")
+    print(f"\n🚀 备注过滤完美版监控启动！当前用户: {user['username']}")
     print(f"⚙️ 模式: 9-13.8秒随机步调 + 纯净内容\n")
 
     while True:
@@ -136,7 +135,7 @@ def poll_discord(user):
                     if not final_text.strip(): 
                         continue
 
-                    print(f"📩 [{datetime.now().strftime('%H:%M:%S')}] 成功抓取新动态，正在投递...")
+                    print(f"📩 [{datetime.now().strftime('%H:%M:%S')}] 成功抓取到真正的群消息并投递...")
                     
                     for webhook in webhooks:
                         send_to_feishu(webhook, final_text)
