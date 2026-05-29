@@ -21,16 +21,13 @@ BASE_HEADERS = {
     'X-Discord-Locale': 'zh-CN',
 }
 
-# 全局状态
 last_message_ids = {}
-initialized = False   # 🛠️ 换回经典的平滑初始化，扩大单次抓取量来防漏
+initialized = False
 CHANNEL_MAPPINGS = {}
 CHANNEL_CUSTOM_NAMES = {}
 
 def parse_config():
-    if not CHANNEL_MAPPINGS_STR: 
-        print("⚠️ CHANNEL_MAPPINGS 环境变量为空")
-        return
+    if not CHANNEL_MAPPINGS_STR: return
     for config in CHANNEL_MAPPINGS_STR.split(';'):
         if not config.strip(): continue
         parts = config.strip().split(':')
@@ -54,7 +51,6 @@ def get_channel_real_name(channel_id):
 
 def get_messages(channel_id):
     try:
-        # 🛠️ 保持 20 条高上限抓取，这样在初始化瞬间绝不会漏掉新消息
         url = f'https://discord.com/api/v10/channels/{channel_id}/messages?limit=20'
         r = requests.get(url, headers=BASE_HEADERS, timeout=15)
         if r.status_code == 429:
@@ -73,9 +69,7 @@ def send_to_feishu(webhook_url, channel_name, content):
             'msg_type': 'text',
             'content': {'text': f'[{channel_name}]\n{content}'}
         }
-        r = requests.post(webhook_url, json=payload, timeout=10)
-        if r.status_code != 200 or r.json().get('code') != 0:
-            print(f"❌ 飞书端拦截或出错: {r.text}")
+        requests.post(webhook_url, json=payload, timeout=10)
     except Exception as e:
         print(f"❌ 飞书网络发送失败: {e}")
 
@@ -87,20 +81,17 @@ def poll_discord(user):
     for cid in CHANNEL_MAPPINGS.keys():
         channel_display_names[cid] = CHANNEL_CUSTOM_NAMES.get(cid) or get_channel_real_name(cid)
     
-    print(f"\n🚀 稳定无漏监控启动！当前用户: {user['username']}")
-    print(f"⚙️ 模式: 9-13.8秒随机步调 + 纯文本与URL多群搬运\n")
+    print(f"\n🚀 深度文字扫描监控启动！当前用户: {user['username']}")
+    print(f"⚙️ 模式: 9-13.8秒随机步调 + 卡片文字全打捞版\n")
 
     while True:
         try:
             for channel_id, webhooks in CHANNEL_MAPPINGS.items():
                 messages = get_messages(channel_id)
-                # 频道间人类行为切换停顿
                 time.sleep(random.uniform(0.5, 1.5))
 
                 if not messages: continue
                 
-                # 如果是刚启动的第一轮，把当前能抓到的最新消息全部标记为已读
-                # 因为提到了 20 条，哪怕启动时有人刷屏也全部被锁死在去重池里，随后的新消息绝对不会漏
                 if not initialized:
                     last_message_ids[channel_id] = {m['id'] for m in messages}
                     continue
@@ -108,33 +99,59 @@ def poll_discord(user):
                 for msg in reversed(messages):
                     mid = msg['id']
                     
-                    # 查重过滤器
                     if mid in last_message_ids.get(channel_id, set()):
                         continue
                     
-                    # 锁死当前 ID，防止并发重复
                     last_message_ids.setdefault(channel_id, set()).add(mid)
                     if len(last_message_ids[channel_id]) > 150: 
                         last_message_ids[channel_id] = set(list(last_message_ids[channel_id])[-150:])
                     
-                    # 身份过滤器：排除自己发的
                     if msg.get('author', {}).get('id') == user['id']: 
                         continue
                     
-                    # 提取内容与链接
-                    content = msg.get('content', '').strip()
+                    # 🛠️ 1. 深度收集“所有可能存在文本”的地方
+                    text_pieces = []
                     
+                    # 普通聊天文本
+                    base_content = msg.get('content', '').strip()
+                    if base_content:
+                        text_pieces.append(base_content)
+                    
+                    # 🔍 扫描嵌入式卡片（Embeds）里的隐藏文本（比如机器人发的通知文字）
+                    embeds = msg.get('embeds', [])
                     extra_links = []
-                    for att in msg.get('attachments', []):
-                        if att.get('url'): extra_links.append(f"[图片/附件]: {att.get('url')}")
-                    for emb in msg.get('embeds', []):
-                        if emb.get('url'): extra_links.append(f"[链接预览]: {emb.get('url')}")
-                        elif emb.get('image', {}).get('url'): extra_links.append(f"[嵌入图片]: {emb.get('image', {}).get('url')}")
+                    
+                    for emb in embeds:
+                        # 捞取卡片标题
+                        if emb.get('title'):
+                            text_pieces.append(f"【标题】{emb.get('title').strip()}")
+                        # 捞取卡片描述（最常藏字的地方）
+                        if emb.get('description'):
+                            text_pieces.append(emb.get('description').strip())
+                        
+                        # 顺带捞取卡片里的图片/链接
+                        if emb.get('url'): 
+                            extra_links.append(f"[链接预览]: {emb.get('url')}")
+                        elif emb.get('image', {}).get('url'): 
+                            extra_links.append(f"[嵌入图片]: {emb.get('image', {}).get('url')}")
 
-                    if not content and not extra_links: 
+                    # 捞取普通附件（普通用户发的图片链接）
+                    for att in msg.get('attachments', []):
+                        if att.get('url'): 
+                            extra_links.append(f"[图片/附件]: {att.get('url')}")
+                        # 有时候附件也有人写描述说明，顺便捞一下
+                        if att.get('description'):
+                            text_pieces.append(f"（图片说明：{att.get('description').strip()}）")
+
+                    # 合并文字块
+                    final_content = "\n".join(text_pieces).strip()
+
+                    # 2. 严格检查：如果没有文字，也没有链接，直接跳过
+                    if not final_content and not extra_links: 
                         continue
                     
-                    final_text = content
+                    # 3. 组装最终发往飞书的文本
+                    final_text = final_content
                     if extra_links:
                         final_text = (final_text + "\n" + "\n".join(extra_links)) if final_text else "\n".join(extra_links)
                     
@@ -142,7 +159,7 @@ def poll_discord(user):
                         continue
 
                     cname = channel_display_names.get(channel_id)
-                    print(f"📩 [{datetime.now().strftime('%H:%M:%S')}] 抓取到 [{cname}] 新动态并投递")
+                    print(f"📩 [{datetime.now().strftime('%H:%M('%S')}] 抓取到 [{cname}] 深度解析消息并投递")
                     
                     for webhook in webhooks:
                         send_to_feishu(webhook, cname, final_text)
@@ -151,7 +168,6 @@ def poll_discord(user):
                 initialized = True
                 print("\n--- 🏁 初始化同步完成，开始实时监控新消息 ---\n")
 
-            # 精准执行 9 ~ 13.8 秒人类随机休眠
             sleep_time = random.uniform(9.0, 13.8)
             time.sleep(sleep_time)
             
@@ -169,18 +185,11 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def main():
     parse_config()
-    if not DISCORD_TOKEN or not CHANNEL_MAPPINGS: 
-        print("❌ 错误: 环境变量不完整")
-        return
-    
+    if not DISCORD_TOKEN or not CHANNEL_MAPPINGS: return
     server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    
     r = requests.get('https://discord.com/api/v10/users/@me', headers=BASE_HEADERS)
-    if r.status_code != 200: 
-        print(f"❌ 身份校验失败: {r.status_code}")
-        return
-    
+    if r.status_code != 200: return
     poll_discord(r.json())
 
 if __name__ == '__main__':
