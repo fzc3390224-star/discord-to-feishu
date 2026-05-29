@@ -4,7 +4,8 @@ import os
 import time
 import random
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ================= 配置参数 =================
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
@@ -22,7 +23,7 @@ BASE_HEADERS = {
 
 # 全局状态
 last_message_ids = {}
-START_TIME = datetime.now(timezone.utc)  # 🛠️ 核心：记录脚本启动的精准时间戳（UTC时间）
+initialized = False   # 🛠️ 换回经典的平滑初始化，扩大单次抓取量来防漏
 CHANNEL_MAPPINGS = {}
 CHANNEL_CUSTOM_NAMES = {}
 
@@ -53,7 +54,7 @@ def get_channel_real_name(channel_id):
 
 def get_messages(channel_id):
     try:
-        # 🛠️ 提升抓取上限到 20 条，防止高频刷屏时漏消息
+        # 🛠️ 保持 20 条高上限抓取，这样在初始化瞬间绝不会漏掉新消息
         url = f'https://discord.com/api/v10/channels/{channel_id}/messages?limit=20'
         r = requests.get(url, headers=BASE_HEADERS, timeout=15)
         if r.status_code == 429:
@@ -79,15 +80,15 @@ def send_to_feishu(webhook_url, channel_name, content):
         print(f"❌ 飞书网络发送失败: {e}")
 
 def poll_discord(user):
+    global initialized
     channel_display_names = {}
     
     print("🔍 正在初始化频道名称...")
     for cid in CHANNEL_MAPPINGS.keys():
         channel_display_names[cid] = CHANNEL_CUSTOM_NAMES.get(cid) or get_channel_real_name(cid)
     
-    print(f"\n🚀 终极无漏监控启动！当前用户: {user['username']}")
-    print(f"⏰ 启动基准时间 (UTC): {START_TIME.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"⚙️ 模式: 9-13.8秒随机步调 + 文字+URL防漏版\n")
+    print(f"\n🚀 稳定无漏监控启动！当前用户: {user['username']}")
+    print(f"⚙️ 模式: 9-13.8秒随机步调 + 纯文本与URL多群搬运\n")
 
     while True:
         try:
@@ -98,38 +99,29 @@ def poll_discord(user):
 
                 if not messages: continue
                 
+                # 如果是刚启动的第一轮，把当前能抓到的最新消息全部标记为已读
+                # 因为提到了 20 条，哪怕启动时有人刷屏也全部被锁死在去重池里，随后的新消息绝对不会漏
+                if not initialized:
+                    last_message_ids[channel_id] = {m['id'] for m in messages}
+                    continue
+                
                 for msg in reversed(messages):
                     mid = msg['id']
                     
-                    # 1. 查重过滤器：去过发过的直接跳过
+                    # 查重过滤器
                     if mid in last_message_ids.get(channel_id, set()):
                         continue
                     
-                    # 2. 核心改进：时间戳过滤器 🛠️
-                    # 解析 Discord 消息自带的 ISO 时间戳字符串 (转换为 UTC datetime)
-                    # 格式样例: "2024-03-29T12:00:00.123000+00:00"
-                    msg_timestamp_str = msg.get('timestamp')
-                    if msg_timestamp_str:
-                        # 兼容处理 Discord 返回的时间字符串格式
-                        msg_timestamp_str = msg_timestamp_str.replace('Z', '+00:00')
-                        msg_time = datetime.fromisoformat(msg_timestamp_str)
-                        
-                        # 核心防漏铁律：只要消息时间晚于脚本启动时间，它就是新消息！哪怕它是在初始化时被抓到的！
-                        if msg_time < START_TIME:
-                            # 属于脚本开启前的陈年老账，记录 ID 并无情跳过
-                            last_message_ids.setdefault(channel_id, set()).add(mid)
-                            continue
-
-                    # 3. 记录当前处理的消息 ID，限制去重集合大小
+                    # 锁死当前 ID，防止并发重复
                     last_message_ids.setdefault(channel_id, set()).add(mid)
-                    if len(last_message_ids[channel_id]) > 100: # 扩大去重池到 100
-                        last_message_ids[channel_id] = set(list(last_message_ids[channel_id])[-100:])
+                    if len(last_message_ids[channel_id]) > 150: 
+                        last_message_ids[channel_id] = set(list(last_message_ids[channel_id])[-150:])
                     
-                    # 4. 身份过滤器：排除自己发的
+                    # 身份过滤器：排除自己发的
                     if msg.get('author', {}).get('id') == user['id']: 
                         continue
                     
-                    # 5. 提取内容与链接
+                    # 提取内容与链接
                     content = msg.get('content', '').strip()
                     
                     extra_links = []
@@ -150,11 +142,15 @@ def poll_discord(user):
                         continue
 
                     cname = channel_display_names.get(channel_id)
-                    print(f"📩 [{datetime.now().strftime('%H:%M:%S')}] 抓取到 [{cname}] 真正新动态并投递")
+                    print(f"📩 [{datetime.now().strftime('%H:%M:%S')}] 抓取到 [{cname}] 新动态并投递")
                     
                     for webhook in webhooks:
                         send_to_feishu(webhook, cname, final_text)
             
+            if not initialized:
+                initialized = True
+                print("\n--- 🏁 初始化同步完成，开始实时监控新消息 ---\n")
+
             # 精准执行 9 ~ 13.8 秒人类随机休眠
             sleep_time = random.uniform(9.0, 13.8)
             time.sleep(sleep_time)
