@@ -15,7 +15,6 @@ HEADERS = {'Authorization': DISCORD_TOKEN}
 last_message_ids = {}
 
 # 解析频道映射配置
-# 格式: "频道ID1:webhook1,webhook2;频道ID2:webhook3"
 CHANNEL_MAPPINGS = {}
 if CHANNEL_MAPPINGS_STR:
     for channel_config in CHANNEL_MAPPINGS_STR.split(';'):
@@ -58,6 +57,24 @@ def send_to_feishu(webhook_url, channel_id, author_name, content):
                          data=json.dumps(payload, ensure_ascii=False), timeout=10)
     except Exception as e:
         pass
+
+def init_last_message_ids(user):
+    """初始化：获取每个频道最新一条消息的ID，但不发送"""
+    print('Initializing message tracking...')
+    for channel_id in CHANNEL_MAPPINGS.keys():
+        messages = get_messages(channel_id)
+        if messages:
+            latest_msg = messages[0]  # 最新的消息在第一个
+            msg_id = latest_msg['id']
+            last_message_ids[channel_id] = {msg_id}
+            author = latest_msg.get('author', {}).get('username', 'Unknown')
+            content = latest_msg.get('content', '')[:30]
+            if latest_msg.get('author', {}).get('id') == user['id']:
+                print(f'  [{channel_id}] Latest by self: {author} - {content}... (skipped)')
+            else:
+                print(f'  [{channel_id}] Latest: {author} - {content}... (skipped)')
+    print('Initialization complete.')
+    print('=' * 50)
 
 def poll_discord(user):
     while True:
@@ -102,6 +119,9 @@ def main():
     for ch, hooks in CHANNEL_MAPPINGS.items():
         print(f'Channel {ch} -> {len(hooks)} webhook(s)')
     print('=' * 50)
+    
+    # 初始化：记录最新消息ID，但不发送
+    init_last_message_ids(user)
     
     poll_discord(user)
 
