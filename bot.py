@@ -27,15 +27,20 @@ CHANNEL_MAPPINGS = {}
 
 def parse_config():
     if not CHANNEL_MAPPINGS_STR: return
+    # 针对分号分割的多个频道进行处理
     for config in CHANNEL_MAPPINGS_STR.split(';'):
         if not config.strip(): continue
-        parts = config.strip().split(':')
-        # 🛠️ 兼容各种填法：不管是 id:name:webhook 还是 id:webhook，统统只提取 ID 和 Webhook
-        if len(parts) >= 2:
+        
+        # 🛠️ 核心修复：使用 split(':', 1) 限制只切第一刀！
+        # 这样 '6540385343:https://open.feishu.cn/...' 会被精准切成：
+        # ['6540385343', 'https://open.feishu.cn/...'] 后面 https 的冒号再也不会被切断！
+        parts = config.strip().split(':', 1)
+        
+        if len(parts) == 2:
             cid = parts[0].strip()
-            # 自动把最后一部分识别为 Webhook 网址
-            webhook_part = parts[-1].strip()
-            CHANNEL_MAPPINGS[cid] = [w.strip() for w in webhook_part.split(',') if w.strip()]
+            webhooks_part = parts[1].strip()
+            # 支持用逗号配置多个飞书群
+            CHANNEL_MAPPINGS[cid] = [w.strip() for w in webhooks_part.split(',') if w.strip()]
 
 def get_messages(channel_id):
     try:
@@ -52,21 +57,22 @@ def get_messages(channel_id):
     return []
 
 def send_to_feishu(webhook_url, content):
-    """🛠️ 移除了 channel_name 参数，直接发送纯内容"""
     try:
         payload = {
             'msg_type': 'text',
-            'content': {'text': content} # 🛠️ 彻底去掉 '[频道名]\n' 的前缀
+            'content': {'text': content}
         }
-        requests.post(webhook_url, json=payload, timeout=10)
+        r = requests.post(webhook_url, json=payload, timeout=10)
+        if r.status_code != 200 or r.json().get('code') != 0:
+            print(f"❌ 飞书内部拒绝发送: {r.text} | Webhook: {webhook_url}")
     except Exception as e:
-        print(f"❌ 飞书网络发送失败: {e}")
+        print(f"❌ 飞书网络发送失败: {e} | Webhook: {webhook_url}")
 
 def poll_discord(user):
     global initialized
     
-    print(f"\n🚀 纯净内容版监控启动！当前用户: {user['username']}")
-    print(f"⚙️ 模式: 9-13.8秒随机步调 + 隐藏所有频道名前缀\n")
+    print(f"\n🚀 智能冒号解析版监控启动！当前用户: {user['username']}")
+    print(f"⚙️ 模式: 9-13.8秒随机步调 + 纯净内容\n")
 
     while True:
         try:
@@ -94,13 +100,10 @@ def poll_discord(user):
                         continue
                     
                     text_pieces = []
-                    
-                    # 普通聊天文本
                     base_content = msg.get('content', '').strip()
                     if base_content:
                         text_pieces.append(base_content)
                     
-                    # 扫描嵌入式卡片
                     embeds = msg.get('embeds', [])
                     extra_links = []
                     
@@ -115,7 +118,6 @@ def poll_discord(user):
                         elif emb.get('image', {}).get('url'): 
                             extra_links.append(f"[嵌入图片]: {emb.get('image', {}).get('url')}")
 
-                    # 捞取普通附件
                     for att in msg.get('attachments', []):
                         if att.get('url'): 
                             extra_links.append(f"[图片/附件]: {att.get('url')}")
@@ -134,7 +136,7 @@ def poll_discord(user):
                     if not final_text.strip(): 
                         continue
 
-                    print(f"📩 [{datetime.now().strftime('%H:%M:%S')}] 发现新动态，正在以纯净模式投递...")
+                    print(f"📩 [{datetime.now().strftime('%H:%M:%S')}] 成功抓取新动态，正在投递...")
                     
                     for webhook in webhooks:
                         send_to_feishu(webhook, final_text)
