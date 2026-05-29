@@ -24,30 +24,18 @@ BASE_HEADERS = {
 last_message_ids = {}
 initialized = False
 CHANNEL_MAPPINGS = {}
-CHANNEL_CUSTOM_NAMES = {}
 
 def parse_config():
     if not CHANNEL_MAPPINGS_STR: return
     for config in CHANNEL_MAPPINGS_STR.split(';'):
         if not config.strip(): continue
         parts = config.strip().split(':')
-        if len(parts) >= 3:
-            cid, cname = parts[0].strip(), parts[1].strip()
-            webhook = ':'.join(parts[2:]).strip()
-            CHANNEL_MAPPINGS[cid] = [w.strip() for w in webhook.split(',') if w.strip()]
-            CHANNEL_CUSTOM_NAMES[cid] = cname
-        elif len(parts) == 2:
-            cid, webhook = parts[0].strip(), parts[1].strip()
-            CHANNEL_MAPPINGS[cid] = [w.strip() for w in webhook.split(',') if w.strip()]
-
-def get_channel_real_name(channel_id):
-    try:
-        url = f'https://discord.com/api/v10/channels/{channel_id}'
-        r = requests.get(url, headers=BASE_HEADERS, timeout=10)
-        if r.status_code == 200:
-            return r.json().get('name', f'ID-{channel_id[:8]}')
-    except: pass
-    return f'ID-{channel_id[:8]}'
+        # 🛠️ 兼容各种填法：不管是 id:name:webhook 还是 id:webhook，统统只提取 ID 和 Webhook
+        if len(parts) >= 2:
+            cid = parts[0].strip()
+            # 自动把最后一部分识别为 Webhook 网址
+            webhook_part = parts[-1].strip()
+            CHANNEL_MAPPINGS[cid] = [w.strip() for w in webhook_part.split(',') if w.strip()]
 
 def get_messages(channel_id):
     try:
@@ -63,11 +51,12 @@ def get_messages(channel_id):
         print(f"❌ 读取通道 [{channel_id}] 异常: {e}")
     return []
 
-def send_to_feishu(webhook_url, channel_name, content):
+def send_to_feishu(webhook_url, content):
+    """🛠️ 移除了 channel_name 参数，直接发送纯内容"""
     try:
         payload = {
             'msg_type': 'text',
-            'content': {'text': f'[{channel_name}]\n{content}'}
+            'content': {'text': content} # 🛠️ 彻底去掉 '[频道名]\n' 的前缀
         }
         requests.post(webhook_url, json=payload, timeout=10)
     except Exception as e:
@@ -75,14 +64,9 @@ def send_to_feishu(webhook_url, channel_name, content):
 
 def poll_discord(user):
     global initialized
-    channel_display_names = {}
     
-    print("🔍 正在初始化频道名称...")
-    for cid in CHANNEL_MAPPINGS.keys():
-        channel_display_names[cid] = CHANNEL_CUSTOM_NAMES.get(cid) or get_channel_real_name(cid)
-    
-    print(f"\n🚀 深度文字扫描监控启动！当前用户: {user['username']}")
-    print(f"⚙️ 模式: 9-13.8秒随机步调 + 卡片文字全打捞版\n")
+    print(f"\n🚀 纯净内容版监控启动！当前用户: {user['username']}")
+    print(f"⚙️ 模式: 9-13.8秒随机步调 + 隐藏所有频道名前缀\n")
 
     while True:
         try:
@@ -109,7 +93,6 @@ def poll_discord(user):
                     if msg.get('author', {}).get('id') == user['id']: 
                         continue
                     
-                    # 1. 深度收集“所有可能存在文本”的地方
                     text_pieces = []
                     
                     # 普通聊天文本
@@ -117,7 +100,7 @@ def poll_discord(user):
                     if base_content:
                         text_pieces.append(base_content)
                     
-                    # 扫描嵌入式卡片（Embeds）里的隐藏文本
+                    # 扫描嵌入式卡片
                     embeds = msg.get('embeds', [])
                     extra_links = []
                     
@@ -139,14 +122,11 @@ def poll_discord(user):
                         if att.get('description'):
                             text_pieces.append(f"（图片说明：{att.get('description').strip()}）")
 
-                    # 合并文字块
                     final_content = "\n".join(text_pieces).strip()
 
-                    # 2. 检查空内容
                     if not final_content and not extra_links: 
                         continue
                     
-                    # 3. 组装最终文本
                     final_text = final_content
                     if extra_links:
                         final_text = (final_text + "\n" + "\n".join(extra_links)) if final_text else "\n".join(extra_links)
@@ -154,12 +134,10 @@ def poll_discord(user):
                     if not final_text.strip(): 
                         continue
 
-                    cname = channel_display_names.get(channel_id)
-                    # 🛠️ 这一行的格式已经彻底修复完美
-                    print(f"📩 [{datetime.now().strftime('%H:%M:%S')}] 抓取到 [{cname}] 深度消息并投递")
+                    print(f"📩 [{datetime.now().strftime('%H:%M:%S')}] 发现新动态，正在以纯净模式投递...")
                     
                     for webhook in webhooks:
-                        send_to_feishu(webhook, cname, final_text)
+                        send_to_feishu(webhook, final_text)
             
             if not initialized:
                 initialized = True
